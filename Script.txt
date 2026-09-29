@@ -1,5 +1,5 @@
 -- ====================================================================
--- CHI CHI WORLD - AUTOMATION & UTILITIES FULL SCRIPT
+-- CHI CHI WORLD - AUTOMATION & UTILITIES FULL SCRIPT (WITH AUTO MAP)
 -- ====================================================================
 
 local Players = game:GetService("Players")
@@ -310,6 +310,35 @@ local autoSection = mainUI:NewSection("Tự động")
 local figureSection = mainUI:NewSection("Nhân vật")
 
 -- --------------------------------------------------------------------
+-- LOGIC TỰ ĐỘNG CHUYỂN MAP (MAP TRANSITION LOGIC)
+-- --------------------------------------------------------------------
+local function autoChangeMap()
+    pcall(function()
+        -- Kích hoạt sự kiện đổi Server / Map từ RemoteEvent
+        if Events:FindFirstChild("SetServerSettings") then
+            Events.SetServerSettings:FireServer({{ MapTime = -1, Paused = true }})
+        end
+        
+        -- Duyệt tìm UI Nút bấm đổi Map (Skip / Teleport / Next Map)
+        local mainGui = PlayerGui:FindFirstChild("MainGui") or PlayerGui:FindFirstChild("GameGui")
+        if mainGui then
+            for _, v in ipairs(mainGui:GetDescendants()) do
+                if v:IsA("TextButton") or v:IsA("ImageButton") then
+                    local name = string.lower(v.Name)
+                    local text = v:IsA("TextButton") and string.lower(v.Text) or ""
+                    if string.find(name, "skip") or string.find(name, "next") or string.find(name, "map") or 
+                       string.find(text, "skip") or string.find(text, "next") or string.find(text, "đổi map") then
+                        for _, conn in pairs(getconnections(v.MouseButton1Click)) do
+                            conn:Fire()
+                        end
+                    end
+                end
+            end
+        end
+    end)
+end
+
+-- --------------------------------------------------------------------
 -- AUTOMATION SECTION
 -- --------------------------------------------------------------------
 local autofarm = false
@@ -413,6 +442,7 @@ autoSection:CreateToggle("AFK", function(enabled)
                     hum.Health = 0
                     timer = 0
                     numChunks = 0
+                    autoChangeMap() -- Gọi hàm đổi Map khi thời gian kẹt quá lâu
                 end
 
                 if grabTimer > 15 and size then
@@ -423,11 +453,11 @@ autoSection:CreateToggle("AFK", function(enabled)
                     if timer < 8 then
                         if sell then sell:FireServer() end
                         if not sellDebounce then
-                            Events.SetServerSettings:FireServer({{ MapTime = -1, Paused = true }})
+                            autoChangeMap() -- Thực hiện Đổi Map tự động
                         end
                         sellDebounce = true
                     else
-                        Events.SetServerSettings:FireServer({{ MapTime = -1, Paused = true }})
+                        autoChangeMap() -- Thực hiện Đổi Map tự động
                     end
                     numChunks = 0
                 elseif size and size.Value == 0 then
@@ -445,7 +475,7 @@ autoSection:CreateToggle("AFK", function(enabled)
 
             hum.Died:Connect(function()
                 if autoConn then autoConn:Disconnect() end
-                Events.SetServerSettings:FireServer({{ MapTime = -1, Paused = true }})
+                autoChangeMap()
             end)
 
             if char:FindFirstChild("LocalChunkManager") then char.LocalChunkManager.Enabled = false end
