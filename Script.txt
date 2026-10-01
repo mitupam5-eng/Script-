@@ -1,5 +1,5 @@
 -- ====================================================================
--- CHI CHI WORLD - AUTOMATION & UTILITIES FULL SCRIPT (WITH AUTO MAP)
+-- CHI CHI WORLD - AUTOMATION & UTILITIES FULL SCRIPT (AFK + HIDE MAP)
 -- ====================================================================
 
 local Players = game:GetService("Players")
@@ -298,10 +298,6 @@ function UI:NewSection(title)
     return section
 end
 
-function Message(Title, Text, Time)
-    print("[" .. tostring(Title) .. "] " .. tostring(Text))
-end
-
 -- --------------------------------------------------------------------
 -- MAIN WINDOW & SECTIONS
 -- --------------------------------------------------------------------
@@ -310,212 +306,178 @@ local autoSection = mainUI:NewSection("Tự động")
 local figureSection = mainUI:NewSection("Nhân vật")
 
 -- --------------------------------------------------------------------
--- LOGIC TỰ ĐỘNG CHUYỂN MAP (MAP TRANSITION LOGIC)
+-- AUTOMATION LOGIC
 -- --------------------------------------------------------------------
-local function autoChangeMap()
-    pcall(function()
-        -- Kích hoạt sự kiện đổi Server / Map từ RemoteEvent
-        if Events:FindFirstChild("SetServerSettings") then
-            Events.SetServerSettings:FireServer({{ MapTime = -1, Paused = true }})
+local farm, collect, claim = false, false, false
+local autoClaimRewards = false
+local autoeat = false
+local fc, cc
+local mapFolder, chunksFolder
+
+local function stopFarm()
+    farm = false
+    if fc then fc:Disconnect(); fc = nil end
+    local b = workspace:FindFirstChild("ETW_AutoFarmBedrock")
+    if b then b:Destroy() end
+
+    -- Hiện lại Map và Chunks khi dừng AFK
+    if mapFolder then mapFolder.Parent = workspace end
+    if chunksFolder then chunksFolder.Parent = workspace end
+end
+
+local function startFarm()
+    if fc then fc:Disconnect() end
+    local c = LocalPlayer.Character
+    if not c then return end
+    local h = c:FindFirstChild("Humanoid")
+    local r = c:FindFirstChild("HumanoidRootPart")
+    local s = c:FindFirstChild("Size")
+    local e = c:FindFirstChild("Events")
+    local ch = c:FindFirstChild("CurrentChunk")
+    local st = c:FindFirstChild("SendTrack")
+    local rad = c:FindFirstChild("Radius")
+    
+    if not (h and r and s and e and ch and st and rad) then return end
+    local eat = e:FindFirstChild("Eat")
+    local grab = e:FindFirstChild("Grab")
+    local sell = e:FindFirstChild("Sell")
+    if not (eat and grab and sell) then return end
+    
+    local bed = Instance.new("Part")
+    bed.Name = "ETW_AutoFarmBedrock"
+    bed.Anchored = true
+    bed.Size = Vector3.new(2048, 10, 2048)
+    bed.Position = Vector3.new(0, -5, 0)
+    bed.Parent = workspace
+    
+    local n, t, g = 0, 0, 0
+    
+    -- Xử lý ẩn Map ban đầu
+    local m = workspace:FindFirstChild("Map")
+    local chk = workspace:FindFirstChild("Chunks")
+    if m then mapFolder = m; m.Parent = nil end
+    if chk then chunksFolder = chk; chk.Parent = nil end
+
+    fc = RunService.Heartbeat:Connect(function(dt)
+        if not farm or not c.Parent or h.Health <= 0 then stopFarm(); return end
+
+        -- Liên tục kiểm tra dọn dẹp Loading và Ẩn Map trong quá trình AFK
+        if workspace:FindFirstChild("Loading") then
+            workspace.Loading:Destroy()
+        end
+        local currentMap = workspace:FindFirstChild("Map")
+        local currentChunks = workspace:FindFirstChild("Chunks")
+        if currentMap then mapFolder = currentMap; currentMap.Parent = nil end
+        if currentChunks then chunksFolder = currentChunks; currentChunks.Parent = nil end
+
+        local up = LocalPlayer:FindFirstChild("Upgrades")
+        local max = up and up:FindFirstChild("MaxSize")
+        if not max then return end
+        
+        h:ChangeState(Enum.HumanoidStateType.Physics)
+        r.Anchored = false
+        grab:FireServer()
+        eat:FireServer()
+        st:FireServer()
+        
+        if ch.Value then 
+            if t > 0 then n += 1 end
+            t = 0
+            g += dt 
+        else 
+            t += dt
+            g = 0 
         end
         
-        -- Duyệt tìm UI Nút bấm đổi Map (Skip / Teleport / Next Map)
-        local mainGui = PlayerGui:FindFirstChild("MainGui") or PlayerGui:FindFirstChild("GameGui")
-        if mainGui then
-            for _, v in ipairs(mainGui:GetDescendants()) do
-                if v:IsA("TextButton") or v:IsA("ImageButton") then
-                    local name = string.lower(v.Name)
-                    local text = v:IsA("TextButton") and string.lower(v.Text) or ""
-                    if string.find(name, "skip") or string.find(name, "next") or string.find(name, "map") or 
-                       string.find(text, "skip") or string.find(text, "next") or string.find(text, "đổi map") then
-                        for _, conn in pairs(getconnections(v.MouseButton1Click)) do
-                            conn:Fire()
-                        end
-                    end
-                end
-            end
+        if t > 60 then h.Health = 0; t = 0; n = 0 end
+        if g > 15 then s.Value = max.Value end
+        
+        if s.Value >= max.Value or t > 8 then
+            if t < 8 then sell:FireServer() end
+            Events.SetServerSettings:FireServer({MapTime = -1, Paused = true})
+            n = 0
+        elseif s.Value == 0 then end
+        
+        local bound = 300
+        local y = bed.Position.Y + bed.Size.Y / 2 + h.HipHeight + r.Size.Y / 2
+        local rr = rad.Value * 1.1
+        local d = rr * n
+        local x = d % bound
+        local z = math.floor(d / bound) * rr
+        
+        if z > bound then 
+            Events.SetServerSettings:FireServer({MapTime = -1, Paused = true})
+            n = 0 
         end
+        r.CFrame = CFrame.new(-bound / 2 + x, y, -bound / 2 + z + rr * 2)
     end)
 end
 
--- --------------------------------------------------------------------
--- AUTOMATION SECTION
--- --------------------------------------------------------------------
-local autofarm = false
-local autoClaimRewards = false
-local autoeat = false
+local function setFarm(v)
+    if v then farm = true; startFarm() else stopFarm() end
+end
 
-autoSection:CreateToggle("AFK", function(enabled)
-    autofarm = enabled
-    if not autofarm then return end
-
-    task.spawn(function()
-        local startTime = tick()
-        local lastEatTime = tick()
-        local eatTime = 0
-        local sellCount = 0
-        local timer = 0
-        local grabTimer = 0
-        local numChunks = 0
-        local sellDebounce = false
-
-        local text = Drawing.new("Text")
-        text.Outline = true
-        text.OutlineColor = Color3.new(0, 0, 0)
-        text.Color = Color3.new(1, 1, 1)
-        text.Center = false
-        text.Position = Vector2.new(64, 64)
-        text.Visible = true
-
-        local map = Workspace:FindFirstChild("Map")
-        local chunks = Workspace:FindFirstChild("Chunks")
-        local bedrock = Workspace:FindFirstChild("Bedrock") or Instance.new("Part")
-
-        local hum, root, size, events, eat, grab, sell, sendTrack, chunk, autoConn
-
-        local function onCharAdd(char)
-            numChunks = 0
-            hum = char:WaitForChild("Humanoid", 5)
-            root = char:WaitForChild("HumanoidRootPart", 5)
-            size = char:WaitForChild("Size", 5)
-            events = char:WaitForChild("Events", 5)
-            
-            if events then
-                eat = events:WaitForChild("Eat", 5)
-                grab = events:WaitForChild("Grab", 5)
-                sell = events:WaitForChild("Sell", 5)
-            end
-            chunk = char:WaitForChild("CurrentChunk", 5)
-            sendTrack = char:WaitForChild("SendTrack", 5)
-
-            if not (hum and root) then return end
-
-            autoConn = RunService.Heartbeat:Connect(function(dt)
-                if not autofarm then
-                    if autoConn then autoConn:Disconnect() end
-                    return
-                end
-
-                local ran = tick() - startTime
-                local hours = math.floor(ran / 3600)
-                local minutes = math.floor(ran / 60)
-                local seconds = math.floor(ran)
-
-                local eatMinutes = math.floor(eatTime / 60)
-                local eatSeconds = math.floor(eatTime)
-
-                local y = bedrock.Position.Y + (bedrock.Size.Y / 2) + hum.HipHeight + (root.Size.Y / 2)
-
-                local maxSize = (LocalPlayer:FindFirstChild("Upgrades") and LocalPlayer.Upgrades:FindFirstChild("MaxSize") and LocalPlayer.Upgrades.MaxSize.Value) or 100
-                local sizeAdd = (LocalPlayer:FindFirstChild("Upgrades") and LocalPlayer.Upgrades:FindFirstChild("Multiplier") and LocalPlayer.Upgrades.Multiplier.Value / 100) or 1
-                local addAmount = maxSize / math.max(sizeAdd, 0.001)
-                local sellTime = addAmount / 2
-
-                local sellMinutes = math.floor(sellTime / 60)
-                local sellSeconds = math.floor(sellTime)
-
-                local secondEarn = math.floor(((maxSize + 0.5) ^ 2 - 0.25) / 2 * 100 / math.max(sellTime, 0.001))
-                local dayEarn = secondEarn * 60 * 60 * 24
-
-                text.Text = "Run: " .. string.format("%ih%im%is", hours, minutes % 60, seconds % 60)
-                    .. "\nEat: " .. string.format("%im%is", eatMinutes % 60, eatSeconds % 60)
-                    .. "\nSell: " .. string.format("%im%is", sellMinutes % 60, sellSeconds % 60)
-                    .. "\nDaily: " .. tostring(dayEarn)
-                    .. "\nChunks: " .. tostring(numChunks)
-
-                hum:ChangeState(Enum.HumanoidStateType.Physics)
-                if grab then grab:FireServer() end
-                root.Anchored = false
-                if eat then eat:FireServer() end
-                if sendTrack then sendTrack:FireServer() end
-
-                if chunk and chunk.Value then
-                    if timer > 0 then numChunks += 1 end
-                    timer = 0
-                    grabTimer += dt
-                else
-                    timer += dt
-                    grabTimer = 0
-                end
-
-                if timer > 60 then
-                    hum.Health = 0
-                    timer = 0
-                    numChunks = 0
-                    autoChangeMap() -- Gọi hàm đổi Map khi thời gian kẹt quá lâu
-                end
-
-                if grabTimer > 15 and size then
-                    size.Value = maxSize
-                end
-
-                if size and (size.Value >= maxSize or timer > 8) then
-                    if timer < 8 then
-                        if sell then sell:FireServer() end
-                        if not sellDebounce then
-                            autoChangeMap() -- Thực hiện Đổi Map tự động
+local function setCollect(v)
+    collect = v
+    if v and not cc then
+        cc = task.spawn(function()
+            local ps = LocalPlayer:FindFirstChild("PlayerScripts")
+            local cv = ps and ps:FindFirstChild("CubeVis")
+            if cv then cv.Enabled = false end
+            while collect do
+                task.wait()
+                local c = LocalPlayer.Character
+                local r = c and c:FindFirstChild("HumanoidRootPart")
+                if r then 
+                    for _, x in ipairs(workspace:GetChildren()) do
+                        if x.Name == "Cube" and x:FindFirstChild("Owner") and (x.Owner.Value == LocalPlayer.Name or x.Owner.Value == "") then 
+                            x.CFrame = r.CFrame 
                         end
-                        sellDebounce = true
-                    else
-                        autoChangeMap() -- Thực hiện Đổi Map tự động
-                    end
-                    numChunks = 0
-                elseif size and size.Value == 0 then
-                    if sellDebounce then
-                        local currentEatTime = tick()
-                        eatTime = currentEatTime - lastEatTime
-                        lastEatTime = currentEatTime
-                        sellCount += 1
-                    end
-                    sellDebounce = false
+                    end 
                 end
-
-                root.CFrame = CFrame.new(0, y, 0)
-            end)
-
-            hum.Died:Connect(function()
-                if autoConn then autoConn:Disconnect() end
-                autoChangeMap()
-            end)
-
-            if char:FindFirstChild("LocalChunkManager") then char.LocalChunkManager.Enabled = false end
-            if char:FindFirstChild("Animate") then char.Animate.Enabled = false end
-        end
-
-        if LocalPlayer.Character then
-            task.spawn(onCharAdd, LocalPlayer.Character)
-        end
-        local charAddConn = LocalPlayer.CharacterAdded:Connect(onCharAdd)
-
-        while autofarm do
-            task.wait()
-            if Workspace:FindFirstChild("Loading") then
-                Workspace.Loading:Destroy()
             end
-            if map and chunks then
-                map.Parent, chunks.Parent = nil, nil
+            if cv then cv.Enabled = true end
+            cc = nil
+        end)
+    end
+end
+
+local function setClaim(v)
+    claim = v
+    if v then 
+        task.spawn(function()
+            while claim do
+                task.wait(1)
+                local tr = LocalPlayer:FindFirstChild("TimedRewards")
+                if tr then 
+                    for _, reward in ipairs(tr:GetChildren()) do
+                        if reward:IsA("ValueBase") and reward.Value > 0 then 
+                            Events.RewardEvent:FireServer(reward) 
+                        end
+                    end 
+                end
+                local spin = Events:FindFirstChild("SpinEvent")
+                if spin then spin:FireServer() end
             end
-        end
+        end) 
+    end
+end
 
-        charAddConn:Disconnect()
-        if autoConn then autoConn:Disconnect() end
-        if map and chunks then
-            map.Parent, chunks.Parent = Workspace, Workspace
-        end
-
-        if LocalPlayer.Character then
-            local char = LocalPlayer.Character
-            if char:FindFirstChildOfClass("Humanoid") then
-                char:FindFirstChildOfClass("Humanoid"):ChangeState(Enum.HumanoidStateType.GettingUp)
-            end
-            if char:FindFirstChild("LocalChunkManager") then char.LocalChunkManager.Enabled = true end
-            if char:FindFirstChild("Animate") then char.Animate.Enabled = true end
-        end
-
-        text:Remove()
-    end)
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1)
+    if farm then
+        startFarm()
+    end
 end)
 
+-- 1. NÚT AFK (GỘP FARM, COLLECT, CLAIM + TỰ ĐỘNG ẨN MAP)
+autoSection:CreateToggle("AFK", function(enabled)
+    setFarm(enabled)
+    setCollect(enabled)
+    setClaim(enabled)
+end)
+
+-- 2. NÚT NHẬN QUÀ
 autoSection:CreateToggle("Nhận quà", function(enabled)
     autoClaimRewards = enabled
     if not autoClaimRewards then return end
@@ -536,6 +498,7 @@ autoSection:CreateToggle("Nhận quà", function(enabled)
     end)
 end)
 
+-- 3. NÚT TỰ ĐỘNG ĂN
 autoSection:CreateToggle("Tự động ăn", function(enabled)
     autoeat = enabled
     if not autoeat then return end
@@ -602,7 +565,7 @@ local antiFallConnection = nil
 figureSection:CreateToggle("chống rơi", function(enabled)
     antiFallEnabled = enabled
     if antiFallEnabled then
-        Workspace.FallenPartsDestroyHeight = -999999
+        workspace.FallenPartsDestroyHeight = -999999
         if not antiFallConnection then
             antiFallConnection = RunService.Heartbeat:Connect(function()
                 if not antiFallEnabled then return end
@@ -621,7 +584,7 @@ figureSection:CreateToggle("chống rơi", function(enabled)
             antiFallConnection:Disconnect()
             antiFallConnection = nil
         end
-        Workspace.FallenPartsDestroyHeight = -500
+        workspace.FallenPartsDestroyHeight = -500
     end
 end)
 
@@ -701,12 +664,12 @@ figureSection:CreateToggle("khóa trọng lực", function(enabled)
         task.spawn(function()
             while gravityLockEnabled do
                 task.wait()
-                Workspace.Gravity = 99999999
+                workspace.Gravity = 99999999
             end
-            Workspace.Gravity = 196.2
+            workspace.Gravity = 196.2
         end)
     else
-        Workspace.Gravity = 196.2
+        workspace.Gravity = 196.2
     end
 end)
 
